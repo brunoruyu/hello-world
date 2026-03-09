@@ -45,36 +45,49 @@ def find_active_btc_market() -> Optional[MarketSnapshot]:
     Search Gamma API for the currently active BTC Up/Down 15-min market.
     Returns a MarketSnapshot or None if not found.
     """
-    try:
-        # Gamma API: search markets by keyword
-        resp = SESSION.get(
-            f"{GAMMA_BASE}/markets",
-            params={
-                "search": "Will BTC",
-                "active": "true",
-                "closed": "false",
-                "limit": 50,
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        markets = resp.json()
-    except Exception as e:
-        log.warning(f"Gamma market search failed: {e}")
+    markets = []
+    for search_term in ("BTC up", "BTC higher", "Bitcoin up", "Will BTC"):
+        try:
+            resp = SESSION.get(
+                f"{GAMMA_BASE}/markets",
+                params={
+                    "search": search_term,
+                    "active": "true",
+                    "closed": "false",
+                    "limit": 20,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            log.info(f"Search '{search_term}' returned {len(batch)} markets")
+            for m in batch:
+                if m.get("id") not in {x.get("id") for x in markets}:
+                    markets.append(m)
+        except Exception as e:
+            log.warning(f"Gamma market search '{search_term}' failed: {e}")
+
+    if not markets:
+        log.warning("All Polymarket searches failed or returned nothing")
         return None
 
-    # Find a BTC up/down 15-minute market
+    # Log all candidates so we can see what's available
+    for m in markets:
+        log.info(f"  Candidate market: {m.get('question', '?')!r}  slug={m.get('slug', '?')!r}")
+
+    # Find a BTC up/down short-duration market
     btc_market = None
     for m in markets:
         q = (m.get("question") or "").lower()
         slug = (m.get("slug") or "").lower()
-        if ("btc" in q or "bitcoin" in q) and ("up" in q or "down" in q or "higher" in q):
+        if ("btc" in q or "bitcoin" in q) and (
+            "up" in q or "down" in q or "higher" in q or "lower" in q
+        ):
             btc_market = m
             break
 
     if not btc_market:
-        questions = [m.get("question", "?") for m in markets[:10]]
-        log.warning(f"No active BTC Up/Down market found. Markets returned: {questions}")
+        log.warning("No active BTC Up/Down market matched the filter")
         return None
 
     return _build_snapshot(btc_market)
