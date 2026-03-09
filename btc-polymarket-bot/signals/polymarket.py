@@ -140,6 +140,68 @@ def _get_best_bid_ask(token_id: str) -> tuple[float, float]:
         return 0.0, 1.0
 
 
+def get_market_outcome(market_id: str, our_side: str) -> Optional[bool]:
+    """
+    Check if a market has resolved and whether our side won.
+
+    Returns:
+        True  → we won
+        False → we lost
+        None  → market not resolved yet (or fetch failed)
+
+    How Polymarket resolves BTC Up/Down markets:
+    - The YES token resolves to $1 if BTC went UP → YES holders win
+    - The NO token resolves to $1 if BTC went DOWN → NO holders win
+    - Resolved markets show `closed=true` and token prices collapse to 0 or 1.
+    """
+    try:
+        # Fetch the market by ID from Gamma
+        resp = SESSION.get(f"{GAMMA_BASE}/markets/{market_id}", timeout=8)
+        resp.raise_for_status()
+        market = resp.json()
+    except Exception as e:
+        log.debug(f"Could not fetch market {market_id} for resolution: {e}")
+        return None
+
+    closed   = market.get("closed") or market.get("resolved") or False
+    archived = market.get("archived", False)
+
+    if not (closed or archived):
+        log.debug(f"Market {market_id} not yet resolved")
+        return None
+
+    # Check token prices — a resolved YES token will be priced at 1.0
+    tokens = market.get("tokens", [])
+    if not tokens:
+        log.warning(f"Market {market_id} resolved but no tokens found")
+        return None
+
+    yes_token = next((t for t in tokens if t.get("outcome", "").upper() == "YES"), None)
+    no_token  = next((t for t in tokens if t.get("outcome", "").upper() == "NO"),  None)
+
+    if yes_token is None or no_token is None:
+        log.warning(f"Market {market_id}: could not identify YES/NO tokens")
+        return None
+
+    yes_price = float(yes_token.get("price", 0))
+    no_price  = float(no_token.get("price",  0))
+
+    log.info(f"Market {market_id} resolved — YES={yes_price:.3f}  NO={no_price:.3f}")
+
+    # Determine winner: whichever token settled at ~1.0 wins
+    if yes_price >= 0.95:
+        winner = "UP"
+    elif no_price >= 0.95:
+        winner = "DOWN"
+    else:
+        # Prices haven't fully settled yet — treat as unresolved
+        log.debug(f"Market {market_id} prices ambiguous (YES={yes_price} NO={no_price}), waiting")
+        return None
+
+    log.info(f"Market winner: {winner}  |  Our side: {our_side}")
+    return our_side == winner
+
+
 def polymarket_flow_signal(snapshot: MarketSnapshot) -> float:
     """
     Derive a signal from order flow:

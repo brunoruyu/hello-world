@@ -30,7 +30,7 @@ from config import (
 from engine.kelly import kelly_bet, expected_value
 from engine.probability import SignalBundle, aggregate_signals, compute_edge
 from signals.derivatives import funding_rate_signal, open_interest_signal, liquidations_signal
-from signals.polymarket import find_active_btc_market, polymarket_flow_signal
+from signals.polymarket import find_active_btc_market, polymarket_flow_signal, get_market_outcome
 from signals.price import get_klines, price_momentum_signal
 from signals.sentiment import fear_greed_signal
 from signals.technicals import rsi_signal, macd_signal, ema_stack_signal
@@ -105,28 +105,28 @@ def log_signals(bundle: SignalBundle, my_prob: float) -> None:
 
 def resolve_old_positions(portfolio: Portfolio, current_market_id: str) -> None:
     """
-    Attempt to resolve any open positions that are no longer the active market.
-    In a real setup this would check resolution on-chain. In dry run we use
-    the actual BTC price movement as ground truth.
+    Resolve any open positions that are no longer the active market window.
+    Checks real Polymarket resolution via the Gamma API — no coin toss.
+    Positions where the market hasn't resolved yet are left open and retried
+    on the next cycle.
     """
     stale = [t for t in portfolio.open_trades if t["market_id"] != current_market_id]
     if not stale:
         return
 
-    # For each stale trade: resolve by fetching current price vs entry price.
-    # Since we don't store entry price in the trade, we use a coin flip weighted
-    # by my_prob as a proxy during dry run (this is intentionally conservative).
-    import random
     for trade_dict in stale:
-        trade_id  = trade_dict["trade_id"]
-        my_prob   = trade_dict["my_prob"]
-        side      = trade_dict["side"]
+        trade_id   = trade_dict["trade_id"]
+        market_id  = trade_dict["market_id"]
+        side       = trade_dict["side"]
 
-        # Simulate outcome: use my_prob to generate a biased random result
-        win_prob = my_prob if side == "UP" else (1 - my_prob)
-        won = random.random() < win_prob
+        won = get_market_outcome(market_id, side)
 
-        log.info(f"Resolving stale trade {trade_id} ({side}) → {'WIN' if won else 'LOSS'}")
+        if won is None:
+            # Market hasn't resolved yet — leave open, check again next cycle
+            log.info(f"Trade {trade_id} ({side} on {market_id}): not yet resolved, leaving open")
+            continue
+
+        log.info(f"Resolving trade {trade_id} ({side}) → {'WIN ✅' if won else 'LOSS ❌'}")
         close_position(portfolio, trade_id, won=won)
 
 
@@ -157,9 +157,10 @@ def run(portfolio: Portfolio) -> None:
         log.info(f"  YES={snapshot.yes_price:.3f}  NO={snapshot.no_price:.3f}  "
                  f"Vol=${snapshot.total_volume_usd:,.0f}")
 
-        # 2. Resolve old positions (from previous market windows)
-        if last_market_id and last_market_id != snapshot.market_id:
-            resolve_old_positions(portfolio, snapshot.market_id)
+        # 2. Resolve old positions — always check, not just on market change.
+        #    Positions from prior windows that haven't resolved yet are retried
+        #    each cycle until Polymarket confirms the outcome.
+        resolve_old_positions(portfolio, snapshot.market_id)
         last_market_id = snapshot.market_id
 
         # 3. Collect signals
@@ -238,7 +239,12 @@ def run(portfolio: Portfolio) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="BTC Polymarket Bot (dry run)")
     parser.add_argument("--summary", action="store_true", help="Print portfolio summary and exit")
+    parser.add_argument("--debug",   action="store_true", help="Print raw API responses for first cycle and exit")
     args = parser.parse_args()
+
+    if args.debug:
+        _debug_apis()
+        return
 
     portfolio = load_portfolio()
 
@@ -251,6 +257,41 @@ def main() -> None:
     except KeyboardInterrupt:
         log.info("\nInterrupted by user.")
         print_summary(portfolio)
+
+
+def _debug_apis() -> None:
+    """Fetch raw responses from each data source and pretty-print them."""
+    import json
+    import requests
+
+    BINANCE = "https://api.binance.com"
+    FUTURES = "https://fapi.binance.com"
+
+    def fetch(label: str, url: str, params: dict = None):
+        print(f"\n{'─'*55}")
+        print(f"  {label}")
+        print(f"  {url}")
+        print(f"{'─'*55}")
+        try:
+            r = requests.get(url, params=params or {}, timeout=8)
+            r.raise_for_status()
+            data = r.json()
+            # Print a trimmed preview
+            preview = json.dumps(data, indent=2)
+            lines = preview.split("\n")
+            print("\n".join(lines[:40]))
+            if len(lines) > 40:
+                print(f"  ... ({len(lines) - 40} more lines)")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+
+    fetch("BTC price",       f"{BINANCE}/api/v3/ticker/price",     {"symbol": "BTCUSDT"})
+    fetch("Klines (3 bars)", f"{BINANCE}/api/v3/klines",           {"symbol": "BTCUSDT", "interval": "1m", "limit": 3})
+    fetch("Funding rate",    f"{FUTURES}/fapi/v1/fundingRate",     {"symbol": "BTCUSDT", "limit": 1})
+    fetch("Open Interest",   f"{FUTURES}/fapi/v1/openInterestHist",{"symbol": "BTCUSDT", "period": "5m", "limit": 3})
+    fetch("Liquidations",    f"{FUTURES}/fapi/v1/forceOrders",     {"symbol": "BTCUSDT", "limit": 5})
+    fetch("Fear & Greed",    "https://api.alternative.me/fng/",    {"limit": 1})
+    fetch("Poly markets",    "https://gamma-api.polymarket.com/markets", {"search": "Will BTC", "active": "true", "closed": "false", "limit": 5})
 
 
 if __name__ == "__main__":
