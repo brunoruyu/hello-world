@@ -132,7 +132,7 @@ def resolve_old_positions(portfolio: Portfolio, current_market_id: str) -> None:
 
 # ── Main loop ──────────────────────────────────────────────────────────────
 
-def run(portfolio: Portfolio) -> None:
+def run(portfolio: Portfolio, once: bool = False) -> None:
     log.info("=" * 55)
     log.info("  BTC POLYMARKET BOT  —  DRY RUN")
     log.info(f"  Bankroll: ${portfolio.bankroll:,.2f}")
@@ -229,7 +229,10 @@ def run(portfolio: Portfolio) -> None:
         # 7. Print mini summary
         print_summary(portfolio)
 
-        # 8. Sleep until next tick
+        # 8. Exit after one cycle (GitHub Actions mode) or sleep
+        if once:
+            log.info("--once mode: exiting after single cycle.")
+            break
         log.info(f"Sleeping {ANALYSIS_INTERVAL_SEC}s until next analysis...")
         time.sleep(ANALYSIS_INTERVAL_SEC)
 
@@ -240,6 +243,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BTC Polymarket Bot (dry run)")
     parser.add_argument("--summary", action="store_true", help="Print portfolio summary and exit")
     parser.add_argument("--debug",   action="store_true", help="Print raw API responses for first cycle and exit")
+    parser.add_argument("--once",    action="store_true", help="Run one cycle then exit (for GitHub Actions)")
     args = parser.parse_args()
 
     if args.debug:
@@ -253,7 +257,7 @@ def main() -> None:
         return
 
     try:
-        run(portfolio)
+        run(portfolio, once=args.once)
     except KeyboardInterrupt:
         log.info("\nInterrupted by user.")
         print_summary(portfolio)
