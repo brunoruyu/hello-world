@@ -31,6 +31,9 @@ jobs:
         run: pip install -r btc-polymarket-bot/requirements.txt
 
       - name: Run one analysis cycle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python btc-polymarket-bot/main.py --once
 
       - name: Commit updated portfolio state
