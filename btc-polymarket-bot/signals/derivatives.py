@@ -58,7 +58,7 @@ def open_interest_signal() -> float:
     a simple heuristic: compare OI now vs 15 minutes ago.
     """
     try:
-        url = f"{FUTURES_BASE}/fapi/v1/openInterestHist"
+        url = f"{FUTURES_BASE}/futures/data/openInterestHist"
         # 30-minute buckets, get last 2 to compute change
         params = {"symbol": BINANCE_SYMBOL, "period": "5m", "limit": 3}
         resp = SESSION.get(url, params=params, timeout=5)
@@ -83,39 +83,28 @@ def open_interest_signal() -> float:
 
 def liquidations_signal() -> float:
     """
-    Recent liquidations → [0, 1] probability of UP.
+    Long/short account ratio → [0, 1] probability of UP.
 
-    More long liquidations → downward pressure → bearish signal
-    More short liquidations → upward pressure → bullish signal
+    More longs than shorts → market is bullish/overextended → contrarian bearish
+    More shorts than longs → market is bearish/overextended → contrarian bullish
 
-    Binance provides forced liquidation orders via /fapi/v1/forceOrders (public).
+    Uses Binance public global long/short account ratio endpoint.
     """
     try:
-        url = f"{FUTURES_BASE}/fapi/v1/forceOrders"
-        params = {"symbol": BINANCE_SYMBOL, "limit": 50}
+        url = f"{FUTURES_BASE}/futures/data/globalLongShortAccountRatio"
+        params = {"symbol": BINANCE_SYMBOL, "period": "5m", "limit": 1}
         resp = SESSION.get(url, params=params, timeout=5)
         resp.raise_for_status()
-        orders = resp.json()
+        data = resp.json()
+        ratio = float(data[0]["longShortRatio"])  # > 1 means more longs
     except Exception as e:
-        log.warning(f"Liquidations fetch failed: {e} — returning neutral 0.5")
+        log.warning(f"Long/short ratio fetch failed: {e} — returning neutral 0.5")
         return 0.5
 
-    if not orders:
-        return 0.5
+    # Contrarian: ratio >> 1 (too many longs) → bearish signal
+    # Clamp ratio to [0.5, 2.0], map to signal
+    import math
+    signal = 0.5 - math.tanh((ratio - 1.0) * 2) * 0.15  # range ~0.35–0.65
 
-    long_liq_usd  = sum(float(o["origQty"]) * float(o["price"])
-                        for o in orders if o["side"] == "SELL")   # long liq = SELL order
-    short_liq_usd = sum(float(o["origQty"]) * float(o["price"])
-                        for o in orders if o["side"] == "BUY")    # short liq = BUY order
-
-    total = long_liq_usd + short_liq_usd
-    if total == 0:
-        return 0.5
-
-    # More short liquidations → bullish (shorts getting squeezed, price going up)
-    # More long  liquidations → bearish (longs getting rekt, price going down)
-    short_ratio = short_liq_usd / total
-    signal = 0.35 + short_ratio * 0.30   # range: 0.35 (all long liqs) to 0.65 (all short liqs)
-
-    log.debug(f"Liqs long=${long_liq_usd:,.0f} short=${short_liq_usd:,.0f} → signal={signal:.3f}")
-    return float(signal)
+    log.debug(f"Long/short ratio={ratio:.3f} → signal={signal:.3f}")
+    return float(max(0.1, min(0.9, signal)))
