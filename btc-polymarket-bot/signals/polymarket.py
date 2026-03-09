@@ -40,57 +40,59 @@ class MarketSnapshot:
     closes_at: Optional[str]
 
 
+def _current_window_timestamps() -> list[int]:
+    """Return timestamps for current, next, and previous 15-min windows."""
+    import math
+    now = int(time.time())
+    window = 900
+    current = math.ceil(now / window) * window
+    return [current, current + window, current - window]
+
+
 def find_active_btc_market() -> Optional[MarketSnapshot]:
     """
-    Search Gamma API for the currently active BTC Up/Down 15-min market.
-    Returns a MarketSnapshot or None if not found.
+    Fetch the active BTC Up/Down 15-min market by slug directly.
+    Slug pattern: btc-updown-15m-{unix_timestamp}
+    Falls back to text search if slug lookup fails.
     """
-    markets = []
-    for search_term in ("Bitcoin Up or Down", "btc-updown", "Bitcoin Up", "BTC up"):
+    # 1. Try direct slug lookup for current/adjacent 15-min windows
+    for ts in _current_window_timestamps():
+        slug = f"btc-updown-15m-{ts}"
         try:
             resp = SESSION.get(
                 f"{GAMMA_BASE}/markets",
-                params={
-                    "search": search_term,
-                    "active": "true",
-                    "closed": "false",
-                    "limit": 20,
-                },
+                params={"slug": slug},
                 timeout=10,
             )
             resp.raise_for_status()
             batch = resp.json()
-            log.info(f"Search '{search_term}' returned {len(batch)} markets")
-            for m in batch:
-                if m.get("id") not in {x.get("id") for x in markets}:
-                    markets.append(m)
+            if batch:
+                m = batch[0]
+                log.info(f"Found market by slug: {m.get('question')!r}  slug={slug}")
+                return _build_snapshot(m)
         except Exception as e:
-            log.warning(f"Gamma market search '{search_term}' failed: {e}")
+            log.debug(f"Slug lookup '{slug}' failed: {e}")
 
-    if not markets:
-        log.warning("All Polymarket searches failed or returned nothing")
-        return None
+    # 2. Fallback: text search
+    log.warning("Slug lookup failed — falling back to text search")
+    try:
+        resp = SESSION.get(
+            f"{GAMMA_BASE}/markets",
+            params={"search": "Bitcoin Up or Down", "active": "true", "closed": "false", "limit": 20},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        markets = resp.json()
+        for m in markets:
+            q = (m.get("question") or "").lower()
+            if ("btc" in q or "bitcoin" in q) and ("up" in q or "down" in q):
+                log.info(f"Found via text search: {m.get('question')!r}")
+                return _build_snapshot(m)
+    except Exception as e:
+        log.warning(f"Text search fallback failed: {e}")
 
-    # Log all candidates so we can see what's available
-    for m in markets:
-        log.info(f"  Candidate market: {m.get('question', '?')!r}  slug={m.get('slug', '?')!r}")
-
-    # Find a BTC up/down short-duration market
-    btc_market = None
-    for m in markets:
-        q = (m.get("question") or "").lower()
-        slug = (m.get("slug") or "").lower()
-        if ("btc" in q or "bitcoin" in q) and (
-            "up" in q or "down" in q or "higher" in q or "lower" in q
-        ):
-            btc_market = m
-            break
-
-    if not btc_market:
-        log.warning("No active BTC Up/Down market matched the filter")
-        return None
-
-    return _build_snapshot(btc_market)
+    log.warning("No active BTC Up/Down market found")
+    return None
 
 
 def _build_snapshot(market: dict) -> Optional[MarketSnapshot]:
