@@ -1,5 +1,2 @@
-btc-polymarket-bot/__pycache__/
-btc-polymarket-bot/**/__pycache__/
-btc-polymarket-bot/**/*.pyc
-btc-polymarket-bot/bot.log
+btc-polymarket-bot/
 bot.log
