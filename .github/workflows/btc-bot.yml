@@ -1,0 +1,42 @@
+name: BTC Polymarket Bot
+
+on:
+  schedule:
+    # Run at :13 :28 :43 :58 — 2 minutes before each 15-min market closes
+    # (markets close at :00 :15 :30 :45, so this catches peak signal data)
+    - cron: "13,28,43,58 * * * *"
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+permissions:
+  contents: write   # needed to commit portfolio.json back
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r btc-polymarket-bot/requirements.txt
+
+      - name: Run one analysis cycle
+        run: python btc-polymarket-bot/main.py --once
+
+      - name: Commit updated portfolio state
+        run: |
+          git config user.name  "btc-bot[bot]"
+          git config user.email "btc-bot@users.noreply.github.com"
+          git add btc-polymarket-bot/portfolio.json
+          git diff --cached --quiet || git commit -m "bot: update portfolio state [skip ci]"
+          git push origin master
