@@ -41,6 +41,7 @@ from trading.paper import (
     print_summary,
     Portfolio,
 )
+from notify import telegram
 
 # ── Logging setup ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -127,7 +128,15 @@ def resolve_old_positions(portfolio: Portfolio, current_market_id: str) -> None:
             continue
 
         log.info(f"Resolving trade {trade_id} ({side}) → {'WIN ✅' if won else 'LOSS ❌'}")
-        close_position(portfolio, trade_id, won=won)
+        closed = close_position(portfolio, trade_id, won=won)
+        if closed:
+            emoji = "✅ WIN" if won else "❌ LOSS"
+            telegram.send(
+                f"<b>{emoji}</b>  #{trade_id}\n"
+                f"Side: {closed.side}  |  PnL: <b>${closed.pnl_usd:+.2f}</b>\n"
+                f"Bankroll: <b>${portfolio.bankroll:,.2f}</b>  "
+                f"({portfolio.total_won}W / {portfolio.total_lost}L)"
+            )
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────
@@ -156,6 +165,12 @@ def run(portfolio: Portfolio, once: bool = False) -> None:
         log.info(f"Market: {snapshot.question}")
         log.info(f"  YES={snapshot.yes_price:.3f}  NO={snapshot.no_price:.3f}  "
                  f"Vol=${snapshot.total_volume_usd:,.0f}")
+        telegram.send(
+            f"🔍 <b>Cycle {cycle}</b>  {now.strftime('%H:%M UTC')}\n"
+            f"{snapshot.question}\n"
+            f"YES {snapshot.yes_price:.1%}  |  NO {snapshot.no_price:.1%}  "
+            f"|  Vol ${snapshot.total_volume_usd:,.0f}"
+        )
 
         # 2. Resolve old positions — always check, not just on market change.
         #    Positions from prior windows that haven't resolved yet are retried
@@ -180,6 +195,14 @@ def run(portfolio: Portfolio, once: bool = False) -> None:
         log.info(
             f"Edge: {analysis.edge:+.2%}  side={analysis.side}  "
             f"my={my_prob:.1%}  market={analysis.market_probability:.1%}"
+        )
+        direction = "▲ UP" if my_prob >= 0.5 else "▼ DOWN"
+        d = bundle.as_dict()
+        sig_lines = "  ".join(f"{k}={v:.2f}" for k, v in d.items() if v is not None)
+        telegram.send(
+            f"📊 <b>Signals</b>  →  {direction} {my_prob:.1%}\n"
+            f"<code>{sig_lines}</code>\n"
+            f"Edge: <b>{analysis.edge:+.1%}</b>  (need ≥5%)"
         )
 
         # 6. Decide whether to bet
@@ -210,6 +233,13 @@ def run(portfolio: Portfolio, once: bool = False) -> None:
             if stake > 0:
                 ev = expected_value(stake, win_prob, analysis.effective_market_prob)
                 log.info(f"Betting ${stake:.2f} on {analysis.side}  EV=+${ev:.2f}")
+                telegram.send(
+                    f"💰 <b>BET PLACED</b>\n"
+                    f"Side: <b>{analysis.side}</b>  |  Stake: <b>${stake:.2f}</b>\n"
+                    f"My prob: {win_prob:.1%}  |  Market: {analysis.effective_market_prob:.1%}\n"
+                    f"Edge: {analysis.edge:+.1%}  |  EV: +${ev:.2f}\n"
+                    f"Bankroll after: ${portfolio.bankroll - stake:,.2f}"
+                )
                 open_position(
                     portfolio=portfolio,
                     market_id=snapshot.market_id,
@@ -232,6 +262,14 @@ def run(portfolio: Portfolio, once: bool = False) -> None:
         # 8. Exit after one cycle (GitHub Actions mode) or sleep
         if once:
             log.info("--once mode: exiting after single cycle.")
+            from config import INITIAL_BANKROLL
+            pnl = portfolio.bankroll - INITIAL_BANKROLL
+            telegram.send(
+                f"📈 <b>Portfolio Summary</b>\n"
+                f"Bankroll: <b>${portfolio.bankroll:,.2f}</b>  ({pnl:+.2f})\n"
+                f"Trades: {portfolio.total_trades}  ({portfolio.total_won}W / {portfolio.total_lost}L  {portfolio.win_rate:.0%})\n"
+                f"Skipped: {portfolio.total_skip}  |  Open: {len(portfolio.open_trades)}"
+            )
             break
         log.info(f"Sleeping {ANALYSIS_INTERVAL_SEC}s until next analysis...")
         time.sleep(ANALYSIS_INTERVAL_SEC)
