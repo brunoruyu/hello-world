@@ -1,0 +1,8 @@
+{
+  "bankroll": 1000.0,
+  "total_won": 0,
+  "total_lost": 0,
+  "total_skip": 0,
+  "open_trades": [],
+  "closed_trades": []
+}
