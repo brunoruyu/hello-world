@@ -97,35 +97,44 @@ def find_active_btc_market() -> Optional[MarketSnapshot]:
 
 def _build_snapshot(market: dict) -> Optional[MarketSnapshot]:
     """Parse market dict into a MarketSnapshot with live prices."""
+    import json as _json
     try:
         condition_id = market.get("conditionId") or market.get("condition_id", "")
-        tokens = market.get("tokens", [])
 
-        if len(tokens) < 2:
-            log.warning("Market has fewer than 2 tokens, skipping")
+        # clobTokenIds, outcomes, outcomePrices come as JSON strings from Gamma API
+        raw_ids    = market.get("clobTokenIds", "[]")
+        raw_outs   = market.get("outcomes", "[]")
+        raw_prices = market.get("outcomePrices", "[]")
+
+        clob_ids = _json.loads(raw_ids)    if isinstance(raw_ids,    str) else raw_ids
+        outcomes = _json.loads(raw_outs)   if isinstance(raw_outs,   str) else raw_outs
+        prices   = _json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
+
+        if len(clob_ids) < 2 or len(outcomes) < 2:
+            log.warning(f"Not enough token data: clob_ids={clob_ids}  outcomes={outcomes}")
             return None
 
-        # Identify YES and NO tokens
-        yes_token = next((t for t in tokens if t.get("outcome", "").upper() == "YES"), tokens[0])
-        no_token  = next((t for t in tokens if t.get("outcome", "").upper() == "NO"),  tokens[1])
+        # outcomes are "Up"/"Down" (not YES/NO)
+        up_idx   = next((i for i, o in enumerate(outcomes) if o.lower() == "up"),   0)
+        down_idx = next((i for i, o in enumerate(outcomes) if o.lower() == "down"), 1)
 
-        yes_price = float(yes_token.get("price", 0.5))
-        no_price  = float(no_token.get("price",  0.5))
+        yes_price = float(prices[up_idx])   if prices else float(market.get("lastTradePrice", 0.5))
+        no_price  = float(prices[down_idx]) if prices else 1 - yes_price
 
-        # Fetch order book for yes token for bid/ask spread
-        yes_bid, yes_ask = _get_best_bid_ask(yes_token["token_id"])
+        yes_bid = float(market.get("bestBid", 0.0))
+        yes_ask = float(market.get("bestAsk", 1.0))
 
         return MarketSnapshot(
             market_id=market.get("id", ""),
             condition_id=condition_id,
             question=market.get("question", ""),
-            yes_token_id=yes_token["token_id"],
+            yes_token_id=clob_ids[up_idx],
             yes_price=yes_price,
-            no_token_id=no_token["token_id"],
+            no_token_id=clob_ids[down_idx],
             no_price=no_price,
             yes_bid=yes_bid,
             yes_ask=yes_ask,
-            total_volume_usd=float(market.get("volume", 0)),
+            total_volume_usd=float(market.get("volumeClob") or market.get("volume", 0)),
             closes_at=market.get("endDateIso") or market.get("end_date_iso"),
         )
     except Exception as e:
