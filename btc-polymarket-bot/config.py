@@ -38,6 +38,10 @@ BINANCE_BASE   = "https://api.binance.com"
 BINANCE_SYMBOL = "BTCUSDT"
 KLINE_INTERVAL = "1m"               # 1-minute candles for TA
 
+import os
+BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+
 # ── Polymarket ─────────────────────────────────────────────────────────────
 POLY_CLOB_BASE = "https://clob.polymarket.com"
 # BTC Up/Down markets are tagged; we search by slug pattern

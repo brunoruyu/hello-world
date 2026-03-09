@@ -1,11 +1,15 @@
 """
 Derivatives market signals: funding rate, open interest, liquidations.
-All from Binance public endpoints — no API key needed.
+Funding rate and OI use public endpoints.
+Liquidations use authenticated /fapi/v1/forceOrders (read-only API key).
 """
 
+import hashlib
+import hmac
 import logging
+import time
 import requests
-from config import BINANCE_BASE, BINANCE_SYMBOL
+from config import BINANCE_BASE, BINANCE_SYMBOL, BINANCE_API_KEY, BINANCE_API_SECRET
 
 log = logging.getLogger(__name__)
 
@@ -81,30 +85,70 @@ def open_interest_signal() -> float:
     return float(max(0.1, min(0.9, signal)))
 
 
+def _signed_request(url: str, params: dict) -> requests.Response:
+    """Add HMAC-SHA256 signature and API key header to a Binance request."""
+    params["timestamp"] = int(time.time() * 1000)
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    sig = hmac.new(
+        BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256
+    ).hexdigest()
+    params["signature"] = sig
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+    return SESSION.get(url, params=params, headers=headers, timeout=5)
+
+
 def liquidations_signal() -> float:
     """
-    Long/short account ratio → [0, 1] probability of UP.
+    Real liquidation data → [0, 1] probability of UP.
 
-    More longs than shorts → market is bullish/overextended → contrarian bearish
-    More shorts than longs → market is bearish/overextended → contrarian bullish
+    Uses /fapi/v1/forceOrders (requires read-only API key).
+    Looks at the last 15 minutes of forced orders:
+    - More SELL liquidations (longs getting rekt) → bearish pressure → signal < 0.5
+    - More BUY liquidations (shorts getting rekt) → bullish pressure → signal > 0.5
 
-    Uses Binance public global long/short account ratio endpoint.
+    Falls back to long/short ratio if API key is not configured.
     """
+    import math
+
+    if not BINANCE_API_KEY or not BINANCE_API_SECRET:
+        # Fallback: public long/short ratio
+        try:
+            url = f"{FUTURES_BASE}/futures/data/globalLongShortAccountRatio"
+            params = {"symbol": BINANCE_SYMBOL, "period": "5m", "limit": 1}
+            resp = SESSION.get(url, params=params, timeout=5)
+            resp.raise_for_status()
+            ratio = float(resp.json()[0]["longShortRatio"])
+            signal = 0.5 - math.tanh((ratio - 1.0) * 2) * 0.15
+            log.debug(f"Long/short ratio fallback={ratio:.3f} → signal={signal:.3f}")
+            return float(max(0.1, min(0.9, signal)))
+        except Exception as e:
+            log.warning(f"Long/short ratio fetch failed: {e} — returning neutral 0.5")
+            return 0.5
+
     try:
-        url = f"{FUTURES_BASE}/futures/data/globalLongShortAccountRatio"
-        params = {"symbol": BINANCE_SYMBOL, "period": "5m", "limit": 1}
-        resp = SESSION.get(url, params=params, timeout=5)
+        url = f"{FUTURES_BASE}/fapi/v1/forceOrders"
+        start_ms = int((time.time() - 15 * 60) * 1000)  # last 15 minutes
+        params = {"symbol": BINANCE_SYMBOL, "startTime": start_ms, "limit": 100}
+        resp = _signed_request(url, params)
         resp.raise_for_status()
-        data = resp.json()
-        ratio = float(data[0]["longShortRatio"])  # > 1 means more longs
+        orders = resp.json()
+
+        # Each order has "side": "BUY" (short liq) or "SELL" (long liq)
+        buy_qty  = sum(float(o["origQty"]) for o in orders if o["side"] == "BUY")
+        sell_qty = sum(float(o["origQty"]) for o in orders if o["side"] == "SELL")
+        total    = buy_qty + sell_qty
+
+        if total == 0:
+            return 0.5
+
+        # More sell liquidations (long wipeouts) → bearish
+        # More buy liquidations  (short wipeouts) → bullish
+        ratio = buy_qty / total   # 0 = all longs liquidated, 1 = all shorts liquidated
+        signal = 0.5 + math.tanh((ratio - 0.5) * 6) * 0.25  # range ~0.25–0.75
+
     except Exception as e:
-        log.warning(f"Long/short ratio fetch failed: {e} — returning neutral 0.5")
+        log.warning(f"Force orders fetch failed: {e} — returning neutral 0.5")
         return 0.5
 
-    # Contrarian: ratio >> 1 (too many longs) → bearish signal
-    # Clamp ratio to [0.5, 2.0], map to signal
-    import math
-    signal = 0.5 - math.tanh((ratio - 1.0) * 2) * 0.15  # range ~0.35–0.65
-
-    log.debug(f"Long/short ratio={ratio:.3f} → signal={signal:.3f}")
+    log.debug(f"Liquidations buy={buy_qty:.2f} sell={sell_qty:.2f} → signal={signal:.3f}")
     return float(max(0.1, min(0.9, signal)))
