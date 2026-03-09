@@ -46,7 +46,7 @@ def find_active_btc_market() -> Optional[MarketSnapshot]:
     Returns a MarketSnapshot or None if not found.
     """
     markets = []
-    for search_term in ("BTC up", "BTC higher", "Bitcoin up", "Will BTC"):
+    for search_term in ("Bitcoin Up or Down", "btc-updown", "Bitcoin Up", "BTC up"):
         try:
             resp = SESSION.get(
                 f"{GAMMA_BASE}/markets",
