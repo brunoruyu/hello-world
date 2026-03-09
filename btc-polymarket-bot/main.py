@@ -159,6 +159,9 @@ def run(portfolio: Portfolio, once: bool = False) -> None:
         snapshot = find_active_btc_market()
         if snapshot is None:
             log.warning("No active BTC market found — will retry next tick")
+            if once:
+                log.info("--once mode: no market found, exiting.")
+                break
             time.sleep(ANALYSIS_INTERVAL_SEC)
             continue
 

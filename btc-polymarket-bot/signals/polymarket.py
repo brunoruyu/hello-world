@@ -73,7 +73,8 @@ def find_active_btc_market() -> Optional[MarketSnapshot]:
             break
 
     if not btc_market:
-        log.warning("No active BTC Up/Down market found on Polymarket")
+        questions = [m.get("question", "?") for m in markets[:10]]
+        log.warning(f"No active BTC Up/Down market found. Markets returned: {questions}")
         return None
 
     return _build_snapshot(btc_market)
