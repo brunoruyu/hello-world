@@ -1,6 +1,5 @@
 btc-polymarket-bot/__pycache__/
 btc-polymarket-bot/**/__pycache__/
 btc-polymarket-bot/**/*.pyc
-btc-polymarket-bot/state/portfolio.json
 btc-polymarket-bot/bot.log
 bot.log
